@@ -1,0 +1,75 @@
+// backend/prisma/schema.prisma
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [vector]
+}
+
+enum IngestionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id        String     @id @default(uuid())
+  email     String     @unique
+  name      String?
+  createdAt DateTime   @default(now())
+  documents Document[]
+}
+
+model Document {
+  id           String          @id @default(uuid())
+  title        String
+  content      String?         @db.Text
+  status       IngestionStatus @default(PENDING)
+  fileSize     Int?
+  errorMessage String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  userId       String?
+  user         User?           @relation(fields: [userId], references: [id])
+  chunks       DocumentChunk[]
+}
+
+
+model DocumentChunk {
+  id         String   @id @default(uuid())
+  text       String   @db.Text
+  
+  embedding  Unsupported("vector(3072)")
+  
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+}
+
+model SystemLog {
+  id        String   @id @default(uuid())
+  action    String   
+  cost      Float    
+  timestamp DateTime @default(now())
+}
+
+enum ADRCategory {
+  SECURITY
+  ARCHITECTURE
+  PERFORMANCE
+  COMPLIANCE
+}
+
+model adr_vectors {
+  id                  String   @id @default(uuid())
+  rule_text           String   @db.Text
+  good_code_example   String?  @db.Text
+  rule_category       ADRCategory @default(SECURITY)
+  embedding           Unsupported("vector(1024)") 
+  createdAt           DateTime @default(now())
+}
