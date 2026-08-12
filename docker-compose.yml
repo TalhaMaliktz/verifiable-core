@@ -1,42 +1,32 @@
-version: '3.8'
-
 services:
-  # The Name of our Service
-  db:
-    # The Image: We are using a pre-made Postgres image that already has Vector support
+  verifiable-core-db:
     image: ankane/pgvector:latest
     
-    # The Container Name: What you see in the Docker Desktop UI
-    container_name: smartdocs-db
-    
-    # Auto-Restart: If it crashes or you restart your laptop, it starts up again
+    container_name: verifiable-core-db
     restart: always
-    
-    # Environment Variables: The default username/password for the DB
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: smartdocs
-    
-    # Ports: "Host Port : Container Port"
-    # We map port 5432 on your laptop to port 5432 inside the box.
+      POSTGRES_DB: smartdocs 
     ports:
       - "5432:5432"
-    
-    # Volumes: This is crucial!
-    # By default, if a container dies, data inside it is lost.
-    # We map a folder "postgres_data" on your laptop to save the data permanently.
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - legacy_pg_data:/var/lib/postgresql/data
 
-  redis:
-      image: redis:alpine
-      ports:
-        - "6379:6379"
-      volumes:
-        - redis_data:/data
+  verifiable-core-redis:
+    image: redis:alpine
+    container_name: verifiable-core-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - legacy_redis_data:/data
 
-# Define the volume storage
+# Persistent Storage Volumes
 volumes:
-  postgres_data:
-  redis_data:
+  legacy_pg_data:
+    external: true
+    name: smart-docs_postgres_data
+  legacy_redis_data:
+    external: true
+    name: smart-docs_redis_data
