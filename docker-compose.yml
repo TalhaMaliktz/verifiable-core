@@ -1,32 +1,24 @@
 services:
-  verifiable-core-db:
+  db:
     image: ankane/pgvector:latest
-    
     container_name: verifiable-core-db
-    restart: always
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: smartdocs 
+      POSTGRES_DB: verifiable_core 
     ports:
       - "5432:5432"
     volumes:
-      - legacy_pg_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql/data
 
-  verifiable-core-redis:
+  redis:
     image: redis:alpine
     container_name: verifiable-core-redis
-    restart: always
     ports:
       - "6379:6379"
     volumes:
-      - legacy_redis_data:/data
+      - redis_data:/data
 
-# Persistent Storage Volumes
 volumes:
-  legacy_pg_data:
-    external: true
-    name: smart-docs_postgres_data
-  legacy_redis_data:
-    external: true
-    name: smart-docs_redis_data
+  pg_data:
+  redis_data:
