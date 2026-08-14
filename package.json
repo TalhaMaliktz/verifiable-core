@@ -33,11 +33,10 @@
     "@nestjs/platform-express": "^11.0.1",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.3.0",
-    "@types/multer": "^2.0.0",
     "bullmq": "^5.69.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.3",
-    "multer": "^2.0.2",
+    "multer": "^2.2.0",
     "pdf-parse": "^2.4.5",
     "pg": "^8.18.0",
     "pgvector": "^0.2.1",
@@ -52,6 +51,7 @@
     "@nestjs/testing": "^11.0.1",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
+    "@types/multer": "^2.2.0",
     "@types/node": "^22.10.7",
     "@types/pdf-parse": "^1.1.5",
     "@types/pg": "^8.16.0",
@@ -72,6 +72,11 @@
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0"
+  },
+  "overrides": {
+    "@browserbasehq/stagehand": {
+      "dotenv": "$dotenv"
+    }
   },
   "jest": {
     "moduleFileExtensions": [
