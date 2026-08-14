@@ -8,7 +8,6 @@ import {
     UploadedFile,
     ParseFilePipe,
     MaxFileSizeValidator,
-    FileTypeValidator
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -26,7 +25,7 @@ export class IngestionController {
 
     constructor(
         @InjectQueue('ingestion') private readonly ingestionQueue: Queue,
-        private readonly prisma: PrismaService
+        private readonly prisma: PrismaService,
     ) { }
 
     @Post('upload')
@@ -35,13 +34,12 @@ export class IngestionController {
         @UploadedFile(
             new ParseFilePipe({
                 validators: [
-                    new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 }),
-                    new FileTypeValidator({ fileType: 'application/pdf' }),
+                    new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 }), // 10MB
                 ],
             }),
         ) file: Express.Multer.File,
     ) {
-        // 1. Create a "PENDING" record in Postgres
+        // 1. Create PENDING record in Postgres
         const document = await this.prisma.document.create({
             data: {
                 title: file.originalname,
@@ -49,7 +47,7 @@ export class IngestionController {
             },
         });
 
-        // 2. Add Job to Queue via Claim Check Pattern
+        // 2. Add Job to Queue via Claim Check Pattern (O(1) Memory)
         const job = await this.ingestionQueue.add('process-pdf', {
             storagePath: file.path,
             documentId: document.id,
@@ -60,7 +58,7 @@ export class IngestionController {
             status: 'queued',
             jobId: job.id,
             documentId: document.id,
-            message: 'File streamed to disk and job queued for processing.'
+            message: 'File streamed to disk and job queued for processing.',
         };
     }
 
