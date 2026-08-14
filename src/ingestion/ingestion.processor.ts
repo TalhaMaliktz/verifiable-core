@@ -3,12 +3,13 @@ import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { IngestionService } from './ingestion.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import * as fs from 'fs/promises';
 
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 interface IngestionJobData {
-    file: { type: 'Buffer'; data: number[] }; // BullMQ serialization of Node Buffer
+    storagePath: string;
     documentId: string;
 }
 
@@ -26,7 +27,7 @@ export class IngestionProcessor extends WorkerHost {
     async process(job: Job<IngestionJobData>): Promise<any> {
         this.logger.log(`--- [WORKER START] Job ${job.id} ---`);
 
-        const { file, documentId } = job.data;
+        const { storagePath, documentId } = job.data;
 
         try {
             await this.prisma.document.update({
@@ -34,10 +35,8 @@ export class IngestionProcessor extends WorkerHost {
                 data: { status: 'PROCESSING' },
             });
 
-            // Reconstruct the file buffer from Redis payload
-            const buffer = Buffer.from(file.data);
-
-            const extractedText = await this.ingestionService.extractTextFromPdf(buffer);
+            // Extract text directly from disk storage path
+            const extractedText = await this.ingestionService.extractTextFromPdf(storagePath);
             this.logger.log(`Extracted Text from Doc ${documentId}: ${extractedText.substring(0, 50)}...`);
 
             // ==========================================
@@ -45,7 +44,6 @@ export class IngestionProcessor extends WorkerHost {
             // ==========================================
             this.logger.log(`Starting Phase 5: Chunking and Native Vectorization...`);
 
-            // 1. Text Splitting via LangChain
             const splitter = new RecursiveCharacterTextSplitter({
                 chunkSize: 1000,
                 chunkOverlap: 200,
@@ -55,13 +53,11 @@ export class IngestionProcessor extends WorkerHost {
             const docs = rawDocs.filter(doc => doc.pageContent.trim().length > 0);
             this.logger.log(`Split document into ${docs.length} valid chunks.`);
 
-            // 2. Validate Environment Configurations
             const apiKey = process.env.GEMINI_API_KEY;
             if (!apiKey) {
                 throw new Error("GEMINI_API_KEY is not defined in the environment. Worker cannot proceed.");
             }
 
-            // 3. Initialize Native Google Generative AI SDK
             const genAI = new GoogleGenerativeAI(apiKey);
             const embeddingModel = genAI.getGenerativeModel({ model: "gemini-embedding-001" });
 
@@ -70,11 +66,9 @@ export class IngestionProcessor extends WorkerHost {
             let savedCount = 0;
             for (let i = 0; i < docs.length; i++) {
                 try {
-                    // Embed chunk into 3072-dimensional vector
                     const result = await embeddingModel.embedContent(docs[i].pageContent);
                     const vector = result.embedding.values;
 
-                    // Data Guard: Prevent pgvector crashes if Google returns empty values
                     if (vector && vector.length > 0) {
                         await this.prisma.$executeRaw`
                             INSERT INTO "DocumentChunk" (id, text, "documentId", embedding)
@@ -92,7 +86,6 @@ export class IngestionProcessor extends WorkerHost {
                 } catch (err) {
                     this.logger.error(`[ERROR] Gemini API rejected chunk ${i}:`, err);
                 } finally {
-                    // Hard Rate Limiter: Enforce < 15 Requests Per Minute (Google Free Tier constraint)
                     if (i < docs.length - 1) {
                         await new Promise(resolve => setTimeout(resolve, 4200));
                     }
@@ -101,9 +94,6 @@ export class IngestionProcessor extends WorkerHost {
 
             this.logger.log(`Successfully saved ${savedCount} valid vectors to pgvector.`);
 
-            // ==========================================
-            // PHASE 5 COMPLETE: FINALIZE DOCUMENT
-            // ==========================================
             await this.prisma.document.update({
                 where: { id: documentId },
                 data: {
@@ -133,7 +123,15 @@ export class IngestionProcessor extends WorkerHost {
                 },
             });
 
-            throw error; // Re-throw to inform BullMQ of job failure
+            throw error;
+        } finally {
+            // DETERMINISTIC CLEANUP: Purge temp file from disk regardless of success or failure
+            try {
+                await fs.unlink(storagePath);
+                this.logger.log(`Ephemeral file unlinked: ${storagePath}`);
+            } catch (unlinkErr) {
+                this.logger.warn(`Could not unlink ephemeral file at ${storagePath}:`, unlinkErr);
+            }
         }
     }
 }
