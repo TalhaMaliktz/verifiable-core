@@ -44,7 +44,7 @@ export class ChatService {
             // The <=> operator calculates Cosine Distance. 
             // 1 - distance = Cosine Similarity.
             // Enterprise Pattern: Extract "Magic Numbers" into tunable configuration variables
-            const SIMILARITY_THRESHOLD = 0.6; // Minimum match percentage (60%) to prevent hallucinations
+            const SIMILARITY_THRESHOLD = 0.5; // Minimum match percentage (50%) to prevent hallucinations
             const TOP_K_LIMIT = 10;           // Maximum chunks to send to the LLM to save token quota
 
             const searchResults = await this.prisma.$queryRaw<Array<{ text: string, similarity: number }>>`
