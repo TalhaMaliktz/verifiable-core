@@ -1,12 +1,13 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { IngestionService } from './ingestion.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import * as fs from 'fs/promises';
 
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 
 interface IngestionJobData {
     storagePath: string;
@@ -17,11 +18,32 @@ interface IngestionJobData {
 export class IngestionProcessor extends WorkerHost {
     private readonly logger = new Logger(IngestionProcessor.name);
 
+    // 1. Immutable, encapsulated class singletons
+    private readonly textSplitter: RecursiveCharacterTextSplitter;
+    private readonly ai: GoogleGenerativeAI;
+    private readonly embeddingModel: GenerativeModel;
+
     constructor(
         private readonly ingestionService: IngestionService,
-        private readonly prisma: PrismaService
+        private readonly prisma: PrismaService,
+        private readonly configService: ConfigService, // Injected configuration provider
     ) {
         super();
+
+        // 2. Fail-Fast Boot Check
+        const apiKey = this.configService.get<string>('GEMINI_API_KEY');
+        if (!apiKey) {
+            throw new Error('GEMINI_API_KEY is not defined in environment variables. Worker cannot start.');
+        }
+
+        // 3. Singleton Allocation (Executed exactly once on startup)
+        this.ai = new GoogleGenerativeAI(apiKey);
+        this.embeddingModel = this.ai.getGenerativeModel({ model: 'gemini-embedding-001' });
+
+        this.textSplitter = new RecursiveCharacterTextSplitter({
+            chunkSize: 1000,
+            chunkOverlap: 200,
+        });
     }
 
     async process(job: Job<IngestionJobData>): Promise<any> {
@@ -39,34 +61,20 @@ export class IngestionProcessor extends WorkerHost {
             const extractedText = await this.ingestionService.extractTextFromPdf(storagePath);
             this.logger.log(`Extracted Text from Doc ${documentId}: ${extractedText.substring(0, 50)}...`);
 
-            // ==========================================
-            // PHASE 5: CHUNKING & VECTORIZATION (RAG INGESTION)
-            // ==========================================
             this.logger.log(`Starting Phase 5: Chunking and Native Vectorization...`);
 
-            const splitter = new RecursiveCharacterTextSplitter({
-                chunkSize: 1000,
-                chunkOverlap: 200,
-            });
-
-            const rawDocs = await splitter.createDocuments([extractedText]);
+            // Use the singleton splitter instance
+            const rawDocs = await this.textSplitter.createDocuments([extractedText]);
             const docs = rawDocs.filter(doc => doc.pageContent.trim().length > 0);
             this.logger.log(`Split document into ${docs.length} valid chunks.`);
-
-            const apiKey = process.env.GEMINI_API_KEY;
-            if (!apiKey) {
-                throw new Error("GEMINI_API_KEY is not defined in the environment. Worker cannot proceed.");
-            }
-
-            const genAI = new GoogleGenerativeAI(apiKey);
-            const embeddingModel = genAI.getGenerativeModel({ model: "gemini-embedding-001" });
 
             this.logger.log(`Throttling requests to Gemini (1 chunk every 4.2 seconds)...`);
 
             let savedCount = 0;
             for (let i = 0; i < docs.length; i++) {
                 try {
-                    const result = await embeddingModel.embedContent(docs[i].pageContent);
+                    // Use the singleton embedding model directly (no per-job allocation)
+                    const result = await this.embeddingModel.embedContent(docs[i].pageContent);
                     const vector = result.embedding.values;
 
                     if (vector && vector.length > 0) {
@@ -98,7 +106,7 @@ export class IngestionProcessor extends WorkerHost {
                 where: { id: documentId },
                 data: {
                     status: 'COMPLETED',
-                    content: extractedText
+                    content: extractedText,
                 },
             });
 
@@ -106,7 +114,7 @@ export class IngestionProcessor extends WorkerHost {
 
             return {
                 status: 'success',
-                chunksGenerated: docs.length
+                chunksGenerated: docs.length,
             };
 
         } catch (error) {
@@ -119,13 +127,13 @@ export class IngestionProcessor extends WorkerHost {
                 where: { id: documentId },
                 data: {
                     status: 'FAILED',
-                    errorMessage: errorMessage
+                    errorMessage: errorMessage,
                 },
             });
 
             throw error;
         } finally {
-            // DETERMINISTIC CLEANUP: Purge temp file from disk regardless of success or failure
+            // DETERMINISTIC CLEANUP: Purge temp file from disk regardless of outcome
             try {
                 await fs.unlink(storagePath);
                 this.logger.log(`Ephemeral file unlinked: ${storagePath}`);
