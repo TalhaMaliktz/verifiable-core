@@ -8,21 +8,21 @@ import { PrismaModule } from 'src/prisma/prisma.module';
 @Module({
   imports: [
     PrismaModule,
-    // Register the specific queue for this module
     BullModule.registerQueue({
-      name: 'ingestion', // <--- MUST match @InjectQueue('ingestion') in Controller
+      name: 'ingestion',
       defaultJobOptions: {
-        attempts: 3,           // <--- RETRY POLICY: Try 3 times total
+        attempts: 3,
         backoff: {
-          type: 'exponential', // <--- STRATEGY: Wait 1s, then 2s, then 4s...
+          type: 'exponential',
           delay: 1000,
         },
-        removeOnComplete: true, // Auto-delete successful jobs to save Redis space
-        removeOnFail: false,    // Keep failed jobs so we can inspect them
+        removeOnComplete: true,
+        removeOnFail: false,
       },
     }),
   ],
   controllers: [IngestionController],
   providers: [IngestionService, IngestionProcessor],
+  exports: [IngestionService],
 })
 export class IngestionModule { }
