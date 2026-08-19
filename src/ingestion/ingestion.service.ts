@@ -96,20 +96,20 @@ export class IngestionService {
 
     private async extractFromPlainText(filePath: string): Promise<string> {
         const content = await fs.readFile(filePath, 'utf-8');
-        const trimmed = content.trim();
+        const sanitized = content.replace(/\0/g, '').trim();
 
-        if (!trimmed) {
+        if (!sanitized) {
             throw new BadRequestException('The uploaded text file is empty.');
         }
 
-        this.logger.log(`Successfully read plaintext/markdown. Extracted ${trimmed.length} characters.`);
-        return trimmed;
+        this.logger.log(`Successfully read plaintext/markdown. Extracted ${sanitized.length} characters.`);
+        return sanitized;
     }
 
     private async extractFromDocx(filePath: string): Promise<string> {
         try {
             const result = await mammoth.extractRawText({ path: filePath });
-            const extractedText = result.value.trim();
+            const extractedText = result.value.replace(/\0/g, '').trim();
 
             if (!extractedText) {
                 throw new BadRequestException('The uploaded DOCX file contains no readable text.');
