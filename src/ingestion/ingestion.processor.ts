@@ -1,6 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
-import { Logger } from '@nestjs/common';
+import { Job, UnrecoverableError } from 'bullmq';
+import { Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IngestionService } from './ingestion.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -17,8 +17,6 @@ interface IngestionJobData {
 @Processor('ingestion')
 export class IngestionProcessor extends WorkerHost {
     private readonly logger = new Logger(IngestionProcessor.name);
-
-    // 1. Immutable, encapsulated class singletons
     private readonly textSplitter: RecursiveCharacterTextSplitter;
     private readonly ai: GoogleGenerativeAI;
     private readonly embeddingModel: GenerativeModel;
@@ -26,17 +24,15 @@ export class IngestionProcessor extends WorkerHost {
     constructor(
         private readonly ingestionService: IngestionService,
         private readonly prisma: PrismaService,
-        private readonly configService: ConfigService, // Injected configuration provider
+        private readonly configService: ConfigService,
     ) {
         super();
 
-        // 2. Fail-Fast Boot Check
         const apiKey = this.configService.get<string>('GEMINI_API_KEY');
         if (!apiKey) {
             throw new Error('GEMINI_API_KEY is not defined in environment variables. Worker cannot start.');
         }
 
-        // 3. Singleton Allocation (Executed exactly once on startup)
         this.ai = new GoogleGenerativeAI(apiKey);
         this.embeddingModel = this.ai.getGenerativeModel({ model: 'gemini-embedding-001' });
 
@@ -47,8 +43,7 @@ export class IngestionProcessor extends WorkerHost {
     }
 
     async process(job: Job<IngestionJobData>): Promise<any> {
-        this.logger.log(`--- [WORKER START] Job ${job.id} ---`);
-
+        this.logger.log(`--- [WORKER START] Job ${job.id} (Attempt ${job.attemptsMade + 1}) ---`);
         const { storagePath, documentId } = job.data;
 
         try {
@@ -57,13 +52,11 @@ export class IngestionProcessor extends WorkerHost {
                 data: { status: 'PROCESSING' },
             });
 
-            // Extract text directly from disk storage path
+            // Extract text with format routing and null-byte sanitization
             const extractedText = await this.ingestionService.extractText(storagePath);
             this.logger.log(`Extracted Text from Doc ${documentId}: ${extractedText.substring(0, 50)}...`);
 
             this.logger.log(`Starting Phase 5: Chunking and Native Vectorization...`);
-
-            // Use the singleton splitter instance
             const rawDocs = await this.textSplitter.createDocuments([extractedText]);
             const docs = rawDocs.filter(doc => doc.pageContent.trim().length > 0);
             this.logger.log(`Split document into ${docs.length} valid chunks.`);
@@ -73,7 +66,6 @@ export class IngestionProcessor extends WorkerHost {
             let savedCount = 0;
             for (let i = 0; i < docs.length; i++) {
                 try {
-                    // Use the singleton embedding model directly (no per-job allocation)
                     const result = await this.embeddingModel.embedContent(docs[i].pageContent);
                     const vector = result.embedding.values;
 
@@ -90,9 +82,10 @@ export class IngestionProcessor extends WorkerHost {
                         savedCount++;
                         this.logger.log(`[${i + 1}/${docs.length}] Successfully saved 3072-dim vector.`);
                     }
-
                 } catch (err) {
                     this.logger.error(`[ERROR] Gemini API rejected chunk ${i}:`, err);
+                    // Bubble up API rejections to trigger BullMQ exponential retry for transient errors
+                    throw err;
                 } finally {
                     if (i < docs.length - 1) {
                         await new Promise(resolve => setTimeout(resolve, 4200));
@@ -118,10 +111,8 @@ export class IngestionProcessor extends WorkerHost {
             };
 
         } catch (error) {
-            const stackTrace = error instanceof Error ? error.stack : 'No stack trace available';
             const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-
-            this.logger.error(`[WORKER FAILED] Job ${job.id} failed`, stackTrace);
+            this.logger.error(`[WORKER FAILED] Job ${job.id} failed: ${errorMessage}`);
 
             await this.prisma.document.update({
                 where: { id: documentId },
@@ -131,14 +122,20 @@ export class IngestionProcessor extends WorkerHost {
                 },
             });
 
+            if (error instanceof BadRequestException) {
+                throw new UnrecoverableError(errorMessage);
+            }
+
             throw error;
         } finally {
-            // DETERMINISTIC CLEANUP: Purge temp file from disk regardless of outcome
             try {
                 await fs.unlink(storagePath);
                 this.logger.log(`Ephemeral file unlinked: ${storagePath}`);
-            } catch (unlinkErr) {
-                this.logger.warn(`Could not unlink ephemeral file at ${storagePath}:`, unlinkErr);
+            } catch (unlinkErr: unknown) {
+                const err = unlinkErr as NodeJS.ErrnoException;
+                if (err.code !== 'ENOENT') {
+                    this.logger.warn(`Could not unlink ephemeral file at ${storagePath}:`, unlinkErr);
+                }
             }
         }
     }
