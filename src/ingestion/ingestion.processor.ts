@@ -58,7 +58,7 @@ export class IngestionProcessor extends WorkerHost {
             });
 
             // Extract text directly from disk storage path
-            const extractedText = await this.ingestionService.extractTextFromPdf(storagePath);
+            const extractedText = await this.ingestionService.extractText(storagePath);
             this.logger.log(`Extracted Text from Doc ${documentId}: ${extractedText.substring(0, 50)}...`);
 
             this.logger.log(`Starting Phase 5: Chunking and Native Vectorization...`);

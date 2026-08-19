@@ -1,10 +1,11 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from 'src/prisma/prisma.service';
 import * as fs from 'fs/promises';
+import { extname } from 'path';
+import * as mammoth from 'mammoth';
 
-// 1. Interface for PDF parser typing
 interface PDFResult {
     text: string;
     numPages?: number;
@@ -33,11 +34,7 @@ export class IngestionService {
         private readonly prisma: PrismaService,
     ) { }
 
-    /**
-     * Orchestrates database record creation and message queue dispatch.
-     */
     async queueDocumentIngestion(file: Express.Multer.File) {
-        // 1. Create a "PENDING" record in Postgres
         const document = await this.prisma.document.create({
             data: {
                 title: file.originalname,
@@ -45,13 +42,12 @@ export class IngestionService {
             },
         });
 
-        // 2. Add Job to Redis Queue via Claim Check Pattern (O(1) Memory)
-        const job = await this.ingestionQueue.add('process-pdf', {
+        const job = await this.ingestionQueue.add('process-document', {
             storagePath: file.path,
             documentId: document.id,
+            originalName: file.originalname,
         });
 
-        // 3. Return lightweight references
         return {
             status: 'queued',
             jobId: job.id,
@@ -60,9 +56,6 @@ export class IngestionService {
         };
     }
 
-    /**
-     * Retrieves the processing status and output of an active or completed job.
-     */
     async getJobStatus(jobId: string) {
         const job = await this.ingestionQueue.getJob(jobId);
 
@@ -82,17 +75,62 @@ export class IngestionService {
     }
 
     /**
-     * Reads a PDF file descriptor directly from disk and extracts raw text.
+     * Top-level format router. Delegates to specialized extractors based on file extension.
      */
-    async extractTextFromPdf(filePath: string): Promise<string> {
+    async extractText(filePath: string): Promise<string> {
+        const extension = extname(filePath).toLowerCase();
+        this.logger.log(`Routing extraction for file: ${filePath} (extension: ${extension})`);
+
+        switch (extension) {
+            case '.pdf':
+                return this.extractFromPdf(filePath);
+            case '.docx':
+                return this.extractFromDocx(filePath);
+            case '.txt':
+            case '.md':
+                return this.extractFromPlainText(filePath);
+            default:
+                throw new BadRequestException(`Unsupported file extension for extraction: ${extension}`);
+        }
+    }
+
+    private async extractFromPlainText(filePath: string): Promise<string> {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const trimmed = content.trim();
+
+        if (!trimmed) {
+            throw new BadRequestException('The uploaded text file is empty.');
+        }
+
+        this.logger.log(`Successfully read plaintext/markdown. Extracted ${trimmed.length} characters.`);
+        return trimmed;
+    }
+
+    private async extractFromDocx(filePath: string): Promise<string> {
+        try {
+            const result = await mammoth.extractRawText({ path: filePath });
+            const extractedText = result.value.trim();
+
+            if (!extractedText) {
+                throw new BadRequestException('The uploaded DOCX file contains no readable text.');
+            }
+
+            this.logger.log(`Successfully parsed DOCX. Extracted ${extractedText.length} characters.`);
+            return extractedText;
+        } catch (error) {
+            this.logger.error(`DOCX extraction failed for path ${filePath}`, error);
+            throw error;
+        }
+    }
+
+    private async extractFromPdf(filePath: string): Promise<string> {
         try {
             const fileBuffer = await fs.readFile(filePath);
-            this.logger.log(`Read file from disk: ${filePath} (${fileBuffer.length} bytes)`);
 
-            // Check magic bytes
+            // Magic byte verification for PDF (%PDF-)
             const header = fileBuffer.subarray(0, 5).toString('ascii');
             if (!header.startsWith('%PDF-')) {
-                throw new Error(`CORRUPTED_FILE: Expected '%PDF-' but got '${header}'`);
+                throw new BadRequestException(`CORRUPTED_FILE: Expected '%PDF-' header but received '${header}'`);
             }
 
             // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment
@@ -101,18 +139,16 @@ export class IngestionService {
 
             const dataArray = new Uint8Array(fileBuffer);
             const parser: PDFParserInstance = new PDFParse({ data: dataArray });
-
             const result: PDFResult = await parser.getText();
 
-            if (!result.text) {
-                throw new Error('PDF_TEXT_EMPTY');
+            if (!result.text || !result.text.trim()) {
+                throw new BadRequestException('The uploaded PDF contains no extractable text.');
             }
 
             this.logger.log(`Successfully parsed PDF. Extracted ${result.text.length} characters.`);
             return result.text;
-
         } catch (error) {
-            this.logger.error(`PDF Extraction Failed for path ${filePath}`, error);
+            this.logger.error(`PDF extraction failed for path ${filePath}`, error);
             throw error;
         }
     }

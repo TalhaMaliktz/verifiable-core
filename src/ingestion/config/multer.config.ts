@@ -15,7 +15,9 @@ const ALLOWED_MIME_TYPES = new Set([
     'text/plain',
     'text/markdown',
     'text/x-markdown',
+    'application/octet-stream',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/msword',
 ]);
 
 const ALLOWED_EXTENSIONS = new Set(['.pdf', '.txt', '.md', '.docx']);
