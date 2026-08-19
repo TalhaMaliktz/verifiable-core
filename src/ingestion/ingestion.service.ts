@@ -5,20 +5,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import * as fs from 'fs/promises';
 import { extname } from 'path';
 import * as mammoth from 'mammoth';
-
-interface PDFResult {
-    text: string;
-    numPages?: number;
-    info?: any;
-}
-
-interface PDFParserInstance {
-    getText(): Promise<PDFResult>;
-}
-
-interface PDFLibrary {
-    PDFParse: new (options: { data: Uint8Array }) => PDFParserInstance;
-}
+import { PDFParse } from 'pdf-parse';
 
 export interface IngestionJobResult {
     status: string;
@@ -133,20 +120,19 @@ export class IngestionService {
                 throw new BadRequestException(`CORRUPTED_FILE: Expected '%PDF-' header but received '${header}'`);
             }
 
-            // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment
-            const pdfLibrary = require('pdf-parse') as PDFLibrary;
-            const { PDFParse } = pdfLibrary;
-
             const dataArray = new Uint8Array(fileBuffer);
-            const parser: PDFParserInstance = new PDFParse({ data: dataArray });
-            const result: PDFResult = await parser.getText();
+            const parser = new PDFParse({ data: dataArray });
+            const result = await parser.getText();
 
-            if (!result.text || !result.text.trim()) {
+            // Strip null bytes (\0) to safeguard PostgreSQL UTF-8 ingestion
+            const sanitized = (result.text || '').replace(/\0/g, '').trim();
+
+            if (!sanitized) {
                 throw new BadRequestException('The uploaded PDF contains no extractable text.');
             }
 
-            this.logger.log(`Successfully parsed PDF. Extracted ${result.text.length} characters.`);
-            return result.text;
+            this.logger.log(`Successfully parsed PDF. Extracted ${sanitized.length} characters.`);
+            return sanitized;
         } catch (error) {
             this.logger.error(`PDF extraction failed for path ${filePath}`, error);
             throw error;
