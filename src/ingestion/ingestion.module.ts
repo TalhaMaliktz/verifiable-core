@@ -4,6 +4,7 @@ import { IngestionController } from './ingestion.controller';
 import { IngestionService } from './ingestion.service';
 import { IngestionProcessor } from './ingestion.processor';
 import { PrismaModule } from 'src/prisma/prisma.module';
+import { EmbeddingModule } from 'src/embedding/embedding.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { PrismaModule } from 'src/prisma/prisma.module';
         removeOnFail: false,
       },
     }),
+    EmbeddingModule,
   ],
   controllers: [IngestionController],
   providers: [IngestionService, IngestionProcessor],

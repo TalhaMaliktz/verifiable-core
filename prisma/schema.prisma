@@ -26,35 +26,36 @@ model User {
 }
 
 model Document {
-  id           String          @id @default(uuid())
-  title        String
-  content      String?         @db.Text
-  status       IngestionStatus @default(PENDING)
-  fileSize     Int?
-  errorMessage String?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  userId       String?
-  user         User?           @relation(fields: [userId], references: [id])
-  chunks       DocumentChunk[]
+  id             String          @id @default(uuid())
+  title          String
+  content        String?         @db.Text
+  fileSize       Int
+  status         String          @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED
+  errorMessage   String?         @db.Text
+  embeddingModel String          @default("gemini-embedding-001")
+  dimensions     Int             @default(3072)
+  userId         String?
+  user           User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  chunks         DocumentChunk[]
 }
 
-
 model DocumentChunk {
-  id         String   @id @default(uuid())
-  text       String   @db.Text
-  
-  embedding  Unsupported("vector(3072)")
-  
+  id         String                 @id @default(uuid())
+  text       String                 @db.Text
   documentId String
-  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  createdAt  DateTime @default(now())
+  document   Document               @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  embedding  Unsupported("vector")?
+  createdAt  DateTime               @default(now())
+
+  @@index([documentId])
 }
 
 model SystemLog {
   id        String   @id @default(uuid())
-  action    String   
-  cost      Float    
+  action    String
+  cost      Float
   timestamp DateTime @default(now())
 }
 
@@ -66,10 +67,10 @@ enum ADRCategory {
 }
 
 model adr_vectors {
-  id                  String   @id @default(uuid())
-  rule_text           String   @db.Text
-  good_code_example   String?  @db.Text
-  rule_category       ADRCategory @default(SECURITY)
-  embedding           Unsupported("vector(1024)") 
-  createdAt           DateTime @default(now())
+  id                String                      @id @default(uuid())
+  rule_text         String                      @db.Text
+  good_code_example String?                     @db.Text
+  rule_category     ADRCategory                 @default(SECURITY)
+  embedding         Unsupported("vector(1024)")
+  createdAt         DateTime                    @default(now())
 }

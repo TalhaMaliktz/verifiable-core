@@ -1,41 +1,31 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job, UnrecoverableError } from 'bullmq';
 import { Logger, BadRequestException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { IngestionService } from './ingestion.service';
 import { PrismaService } from 'src/prisma/prisma.service';
-import * as fs from 'fs/promises';
-
+import { EmbeddingFactory } from 'src/embedding/embedding.factory';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
-import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
+import * as fs from 'fs/promises';
 
 interface IngestionJobData {
     storagePath: string;
     documentId: string;
+    preferredModel?: string;
 }
 
 @Processor('ingestion')
 export class IngestionProcessor extends WorkerHost {
     private readonly logger = new Logger(IngestionProcessor.name);
     private readonly textSplitter: RecursiveCharacterTextSplitter;
-    private readonly ai: GoogleGenerativeAI;
-    private readonly embeddingModel: GenerativeModel;
 
     constructor(
         private readonly ingestionService: IngestionService,
         private readonly prisma: PrismaService,
-        private readonly configService: ConfigService,
+        private readonly embeddingFactory: EmbeddingFactory,
     ) {
         super();
 
-        const apiKey = this.configService.get<string>('GEMINI_API_KEY');
-        if (!apiKey) {
-            throw new Error('GEMINI_API_KEY is not defined in environment variables. Worker cannot start.');
-        }
-
-        this.ai = new GoogleGenerativeAI(apiKey);
-        this.embeddingModel = this.ai.getGenerativeModel({ model: 'gemini-embedding-001' });
-
+        // Chunking parameters remain consistent across all models
         this.textSplitter = new RecursiveCharacterTextSplitter({
             chunkSize: 1000,
             chunkOverlap: 200,
@@ -44,57 +34,59 @@ export class IngestionProcessor extends WorkerHost {
 
     async process(job: Job<IngestionJobData>): Promise<any> {
         this.logger.log(`--- [WORKER START] Job ${job.id} (Attempt ${job.attemptsMade + 1}) ---`);
-        const { storagePath, documentId } = job.data;
+        const { storagePath, documentId, preferredModel } = job.data;
 
         try {
+            // 1. Resolve embedding provider dynamically via Factory
+            const provider = this.embeddingFactory.getProvider(preferredModel);
+            this.logger.log(`Active Embedding Provider: ${provider.modelName} (${provider.dimensions} dims)`);
+
+            // 2. Track model metadata on the document record
             await this.prisma.document.update({
                 where: { id: documentId },
-                data: { status: 'PROCESSING' },
+                data: {
+                    status: 'PROCESSING',
+                    embeddingModel: provider.modelName,
+                    dimensions: provider.dimensions,
+                },
             });
 
-            // Extract text with format routing and null-byte sanitization
+            // 3. Extract text from disk and chunk it
             const extractedText = await this.ingestionService.extractText(storagePath);
             this.logger.log(`Extracted Text from Doc ${documentId}: ${extractedText.substring(0, 50)}...`);
 
-            this.logger.log(`Starting Phase 5: Chunking and Native Vectorization...`);
             const rawDocs = await this.textSplitter.createDocuments([extractedText]);
-            const docs = rawDocs.filter(doc => doc.pageContent.trim().length > 0);
+            const docs = rawDocs.filter((doc) => doc.pageContent.trim().length > 0);
             this.logger.log(`Split document into ${docs.length} valid chunks.`);
 
-            this.logger.log(`Throttling requests to Gemini (1 chunk every 4.2 seconds)...`);
-
+            // 4. Delegate embedding generation to the active provider
             let savedCount = 0;
             for (let i = 0; i < docs.length; i++) {
                 try {
-                    const result = await this.embeddingModel.embedContent(docs[i].pageContent);
-                    const vector = result.embedding.values;
+                    const result = await provider.embedText(docs[i].pageContent);
 
-                    if (vector && vector.length > 0) {
+                    if (result.embedding && result.embedding.length > 0) {
                         await this.prisma.$executeRaw`
-                            INSERT INTO "DocumentChunk" (id, text, "documentId", embedding)
-                            VALUES (
-                                gen_random_uuid(), 
-                                ${docs[i].pageContent}, 
-                                ${documentId}, 
-                                ${JSON.stringify(vector)}::vector
-                            )
+                        INSERT INTO "DocumentChunk" (id, text, "documentId", embedding)
+                        VALUES (
+                            gen_random_uuid(), 
+                            ${docs[i].pageContent}, 
+                            ${documentId}, 
+                            ${JSON.stringify(result.embedding)}::vector
+                        )
                         `;
                         savedCount++;
-                        this.logger.log(`[${i + 1}/${docs.length}] Successfully saved 3072-dim vector.`);
+                        this.logger.log(`[${i + 1}/${docs.length}] Persisted ${result.dimensions}-dim vector.`);
                     }
                 } catch (err) {
-                    this.logger.error(`[ERROR] Gemini API rejected chunk ${i}:`, err);
-                    // Bubble up API rejections to trigger BullMQ exponential retry for transient errors
-                    throw err;
-                } finally {
-                    if (i < docs.length - 1) {
-                        await new Promise(resolve => setTimeout(resolve, 4200));
-                    }
+                    this.logger.error(`Embedding generation failed on chunk ${i}:`, err);
+                    throw err; // Trigger BullMQ retry for transient network errors
                 }
             }
 
-            this.logger.log(`Successfully saved ${savedCount} valid vectors to pgvector.`);
+            this.logger.log(`Successfully saved ${savedCount} vectors to pgvector.`);
 
+            // 5. Complete document processing
             await this.prisma.document.update({
                 where: { id: documentId },
                 data: {
@@ -108,8 +100,8 @@ export class IngestionProcessor extends WorkerHost {
             return {
                 status: 'success',
                 chunksGenerated: docs.length,
+                modelUsed: provider.modelName,
             };
-
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
             this.logger.error(`[WORKER FAILED] Job ${job.id} failed: ${errorMessage}`);
