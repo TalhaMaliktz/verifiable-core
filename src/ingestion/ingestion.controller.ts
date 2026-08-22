@@ -7,6 +7,7 @@ import {
     UploadedFile,
     ParseFilePipe,
     MaxFileSizeValidator,
+    Body,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { IngestionService } from './ingestion.service';
@@ -27,8 +28,9 @@ export class IngestionController {
             }),
         )
         file: Express.Multer.File,
+        @Body('model') model?: string,
     ) {
-        return this.ingestionService.queueDocumentIngestion(file);
+        return this.ingestionService.queueDocumentIngestion(file, model);
     }
 
     @Get('status/:id')

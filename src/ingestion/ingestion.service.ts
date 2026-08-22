@@ -21,7 +21,7 @@ export class IngestionService {
         private readonly prisma: PrismaService,
     ) { }
 
-    async queueDocumentIngestion(file: Express.Multer.File) {
+    async queueDocumentIngestion(file: Express.Multer.File, preferredModel?: string) {
         const document = await this.prisma.document.create({
             data: {
                 title: file.originalname,
@@ -33,6 +33,7 @@ export class IngestionService {
             storagePath: file.path,
             documentId: document.id,
             originalName: file.originalname,
+            preferredModel: preferredModel,
         });
 
         return {
