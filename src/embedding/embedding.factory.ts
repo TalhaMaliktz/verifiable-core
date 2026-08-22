@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GeminiEmbeddingProvider } from './providers/gemini.provider';
+import { OllamaEmbeddingProvider } from './providers/ollama.provider';
 import { IEmbeddingProvider } from './interfaces/embedding-provider.interface';
 
 @Injectable()
@@ -11,26 +12,29 @@ export class EmbeddingFactory {
     constructor(
         private readonly configService: ConfigService,
         private readonly geminiEmbeddingProvider: GeminiEmbeddingProvider,
+        private readonly ollamaEmbeddingProvider: OllamaEmbeddingProvider,
     ) {
-        // 1. Register canonical names and short aliases
+        // Register Gemini
         this.providers.set('gemini', this.geminiEmbeddingProvider);
         this.providers.set('gemini-embedding-001', this.geminiEmbeddingProvider);
 
-        // 2. Read default from environment or fallback to gemini
+        // Register Ollama
+        this.providers.set('ollama', this.ollamaEmbeddingProvider);
+        this.providers.set('nomic-embed-text', this.ollamaEmbeddingProvider);
+
+        // Dynamic Default via .env (e.g. DEFAULT_EMBEDDING_PROVIDER="ollama")
         this.defaultProviderKey =
             this.configService.get<string>('DEFAULT_EMBEDDING_PROVIDER')?.toLowerCase() || 'gemini';
     }
 
     getProvider(modelIdentifier?: string): IEmbeddingProvider {
-        // Resolve target key: caller argument -> env default -> hardcoded fallback
         const targetKey = (modelIdentifier || this.defaultProviderKey).toLowerCase();
-
         const provider = this.providers.get(targetKey);
 
         if (!provider) {
             const availableProviders = Array.from(this.providers.keys()).join(', ');
             throw new NotFoundException(
-                `Unsupported embedding provider: '${targetKey}'. Available providers: [${availableProviders}]`,
+                `Unsupported embedding provider: '${targetKey}'. Available: [${availableProviders}]`,
             );
         }
 
