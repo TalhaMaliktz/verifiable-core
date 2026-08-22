@@ -44,7 +44,6 @@ export class GeminiEmbeddingProvider implements IEmbeddingProvider {
             const result = await this.embedText(texts[i]);
             results.push(result);
 
-            // Respect free tier rate limits (1 request every 4.2 seconds)
             if (i < texts.length - 1) {
                 await new Promise((resolve) => setTimeout(resolve, 4200));
             }
