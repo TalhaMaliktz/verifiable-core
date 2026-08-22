@@ -120,13 +120,20 @@ export class IngestionProcessor extends WorkerHost {
 
             throw error;
         } finally {
-            try {
-                await fs.unlink(storagePath);
-                this.logger.log(`Ephemeral file unlinked: ${storagePath}`);
-            } catch (unlinkErr: unknown) {
-                const err = unlinkErr as NodeJS.ErrnoException;
-                if (err.code !== 'ENOENT') {
-                    this.logger.warn(`Could not unlink ephemeral file at ${storagePath}:`, unlinkErr);
+            // Only delete file if job succeeded OR if this was the final retry attempt
+            const maxAttempts = job.opts.attempts ?? 3;
+            const isFinalAttempt = (job.attemptsMade + 1) >= maxAttempts;
+
+            // If completed successfully or permanently failed, wipe from disk
+            if (isFinalAttempt || (await this.prisma.document.findUnique({ where: { id: documentId } }))?.status === 'COMPLETED') {
+                try {
+                    await fs.unlink(storagePath);
+                    this.logger.log(`Ephemeral file unlinked: ${storagePath}`);
+                } catch (unlinkErr: unknown) {
+                    const err = unlinkErr as NodeJS.ErrnoException;
+                    if (err.code !== 'ENOENT') {
+                        this.logger.warn(`Could not unlink ephemeral file at ${storagePath}:`, unlinkErr);
+                    }
                 }
             }
         }
