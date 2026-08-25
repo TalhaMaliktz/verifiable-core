@@ -80,18 +80,18 @@ npm install
 Create a `.env` file in the root directory:
 
 ```env
-# Infrastructure Configurations
+# Database
 PORT=3000
+DATABASE_URL="postgresql://postgres:password@localhost:5432/verifiable_core?schema=public"
 
-# Connection string for local Docker container
-DATABASE_URL="postgresql://postgres:password@localhost:5432/smartdocs?schema=public"
-
-# Redis Connection (Required for BullMQ)
+# Redis
 REDIS_HOST="localhost"
 REDIS_PORT=6379
 
 # External Model Providers
 GEMINI_API_KEY="your_api_key_here"
+OLLAMA_BASE_URL="http://localhost:11434/"
+DEFAULT_EMBEDDING_PROVIDER="ollama"
 ```
 
 ### 4. Infrastructure & Database
