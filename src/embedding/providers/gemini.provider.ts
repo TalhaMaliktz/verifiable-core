@@ -3,11 +3,16 @@ import { ConfigService } from "@nestjs/config";
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import { IEmbeddingProvider, EmbeddingResult } from "../interfaces/embedding-provider.interface";
 
+interface ExtendedEmbedContentRequest {
+    content: { role: string; parts: { text: string }[] };
+    outputDimensionality?: number;
+}
+
 @Injectable()
 export class GeminiEmbeddingProvider implements IEmbeddingProvider {
     private readonly logger = new Logger(GeminiEmbeddingProvider.name);
     readonly modelName = "gemini-embedding-001";
-    readonly dimensions = 3072;
+    readonly dimensions = 1536;
 
     private readonly ai: GoogleGenerativeAI;
     private readonly embeddingModel: GenerativeModel;
@@ -24,12 +29,24 @@ export class GeminiEmbeddingProvider implements IEmbeddingProvider {
 
     async embedText(text: string): Promise<EmbeddingResult> {
         try {
-            const response = await this.embeddingModel.embedContent(text);
-            const values = response.embedding.values;
+            const payload: ExtendedEmbedContentRequest = {
+                content: { role: 'user', parts: [{ text }] },
+                outputDimensionality: this.dimensions,
+            };
+
+            const response = await this.embeddingModel.embedContent(
+                payload,
+            );
+
+            let values = response.embedding.values;
+
+            if (values.length > this.dimensions) {
+                values = this.normalizeSubspace(values.slice(0, this.dimensions));
+            }
 
             return {
                 embedding: values,
-                dimensions: this.dimensions,
+                dimensions: values.length,
                 model: this.modelName,
             };
         } catch (error) {
@@ -49,5 +66,10 @@ export class GeminiEmbeddingProvider implements IEmbeddingProvider {
             }
         }
         return results;
+    }
+
+    private normalizeSubspace(vector: number[]): number[] {
+        const norm = Math.sqrt(vector.reduce((sum, val) => sum + val * val, 0));
+        return norm === 0 ? vector : vector.map((val) => val / norm);
     }
 }
