@@ -14,7 +14,7 @@ export class OpenAIEmbeddingProvider implements IEmbeddingProvider {
     constructor(private readonly configService: ConfigService) {
         const apiKey = this.configService.get<string>('OPENAI_API_KEY');
         if (!apiKey) {
-            this.logger.warn('OPENAI_API_KEY is not configured in .env. OpenAI provider will throw if invoked.');
+            this.logger.warn('OPENAI_API_KEY is not configured in .env. Direct OpenAI provider will fail if invoked.');
         }
 
         this.client = new OpenAI({
