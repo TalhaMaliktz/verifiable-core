@@ -15,10 +15,10 @@ export class GeminiEmbeddingProvider implements IEmbeddingProvider {
     constructor(private readonly configService: ConfigService) {
         const apiKey = this.configService.get<string>('GEMINI_API_KEY');
         if (!apiKey) {
-            throw new Error('GEMINI_API_KEY is not defined in environment variables.');
+            this.logger.warn('GEMINI_API_KEY is not configured in .env. Gemini provider will fail if invoked.');
         }
 
-        this.ai = new GoogleGenerativeAI(apiKey);
+        this.ai = new GoogleGenerativeAI(apiKey || 'dummy-key');
         this.embeddingModel = this.ai.getGenerativeModel({ model: this.modelName });
     }
 
