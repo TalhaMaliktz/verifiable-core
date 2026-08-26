@@ -1,20 +1,32 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { ValidationPipe } from '@nestjs/common'; // <--- Import this
+import { ValidationPipe, Logger } from '@nestjs/common';
+import helmet from 'helmet';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const logger = new Logger('Bootstrap');
 
-  app.enableCors();
+  app.use(helmet());
 
-  // Enforce validation rules on all endpoints
+  app.enableCors({
+    origin: '*',
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+  });
+
   app.useGlobalPipes(new ValidationPipe({
-    whitelist: true, // Strips out properties that aren't in the DTO
-    forbidNonWhitelisted: true, // Throws error if extra data is sent
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
   }),
   );
 
-  await app.listen(3000);
+  const port = process.env.PORT || 3000;
+  await app.listen(port);
+  logger.log(`Application running securely on: http://localhost:${port}`);
 }
-bootstrap();
+bootstrap().catch((err) => {
+  new Logger('Bootstrap').error('Application failed to start:', err);
+  process.exit(1);
+});
