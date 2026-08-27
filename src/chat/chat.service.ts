@@ -1,109 +1,205 @@
-import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import {
+    Injectable,
+    Logger,
+    BadRequestException,
+    NotFoundException,
+    InternalServerErrorException
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { EmbeddingFactory } from '../embedding/embedding.factory';
+import { Prisma } from '@prisma/client';
+
+interface RetrievedChunk {
+    id: string;
+    documentId: string;
+    documentTitle: string;
+    chunkIndex: number;
+    text: string;
+    similarity: number;
+}
 
 @Injectable()
 export class ChatService {
     private readonly logger = new Logger(ChatService.name);
-    private ai: GoogleGenerativeAI;
+    private readonly ai: GoogleGenerativeAI;
 
-    // Added PrismaService to the constructor
     constructor(
-        private configService: ConfigService,
-        private prisma: PrismaService
+        private readonly configService: ConfigService,
+        private readonly prisma: PrismaService,
+        private readonly embeddingFactory: EmbeddingFactory,
     ) {
         const apiKey = this.configService.get<string>('GEMINI_API_KEY');
-        if (!apiKey) {
-            throw new Error('GEMINI_API_KEY is missing from environment variables.');
-        }
-        this.ai = new GoogleGenerativeAI(apiKey);
+        this.ai = new GoogleGenerativeAI(apiKey || 'dummy-key');
     }
 
-    async processChatRequest(userMessage: string) {
-        this.logger.log(`Received user question: "${userMessage}"`);
+    async processChatRequest(userMessage: string, documentIds?: string[]) {
+        this.logger.log(
+            `Received query: "${userMessage}" | Scoped Docs: ${documentIds && documentIds.length > 0 ? documentIds.join(', ') : 'Global Knowledge Base'
+            }`,
+        );
 
         try {
-            // 1. Convert userMessage into a 3072-dim vector (Gemini Embedding)
-            this.logger.log('Translating question into high-dimensional vector...');
+            // 1. Model Resolution & Dimension Uniformity Verification
+            let targetModel: string | undefined;
 
-            // We must strictly use the same model used during document ingestion
-            const embeddingModel = this.ai.getGenerativeModel({ model: 'gemini-embedding-001' });
+            if (documentIds && documentIds.length > 0) {
+                const documents = await this.prisma.document.findMany({
+                    where: { id: { in: documentIds } },
+                    select: { id: true, title: true, embeddingModel: true, dimensions: true, status: true },
+                });
 
-            const result = await embeddingModel.embedContent(userMessage);
-            const queryVector = result.embedding.values;
+                if (documents.length === 0) {
+                    throw new NotFoundException('None of the specified document IDs were found.');
+                }
 
-            this.logger.log(`Successfully generated vector array of length: ${queryVector.length}`);
+                if (documents.length !== documentIds.length) {
+                    const foundIds = new Set(documents.map((d) => d.id));
+                    const missingIds = documentIds.filter((id) => !foundIds.has(id));
+                    throw new NotFoundException(`Documents not found for IDs: ${missingIds.join(', ')}`);
+                }
 
-            // 2. Run Raw SQL Cosine Similarity search against pgvector
-            this.logger.log('Querying pgvector database for top matching chunks...');
+                // Verify that all selected documents share identical embedding models
+                const modelSet = new Set(documents.map((d) => d.embeddingModel));
+                if (modelSet.size > 1) {
+                    throw new BadRequestException(
+                        `Cannot query across mixed embedding models simultaneously: [${Array.from(modelSet).join(
+                            ', ',
+                        )}]. Please select documents embedded with the same model.`,
+                    );
+                }
 
-            // We must stringify the array so Postgres can parse it into the ::vector type
-            const vectorString = JSON.stringify(queryVector);
+                targetModel = documents[0].embeddingModel;
+            }
 
-            // The <=> operator calculates Cosine Distance. 
-            // 1 - distance = Cosine Similarity.
-            // Enterprise Pattern: Extract "Magic Numbers" into tunable configuration variables
-            const SIMILARITY_THRESHOLD = 0.5; // Minimum match percentage (50%) to prevent hallucinations
-            const TOP_K_LIMIT = 10;           // Maximum chunks to send to the LLM to save token quota
+            // 2. Vectorize user question using the resolved provider
+            const provider = this.embeddingFactory.getProvider(targetModel);
+            this.logger.log(
+                `Vectorizing query using provider: ${provider.modelName} (${provider.dimensions} dims)`,
+            );
 
-            const searchResults = await this.prisma.$queryRaw<Array<{ text: string, similarity: number }>>`
-                SELECT 
-                text, 
-                1 - (embedding <=> ${vectorString}::vector) as similarity
-                FROM "DocumentChunk"
-                WHERE 1 - (embedding <=> ${vectorString}::vector) > ${SIMILARITY_THRESHOLD}
-                ORDER BY embedding <=> ${vectorString}::vector
-                LIMIT ${TOP_K_LIMIT};
-            `;
+            const { embedding } = await provider.embedText(userMessage);
+            const vectorString = JSON.stringify(embedding);
 
-            this.logger.log(`Found ${searchResults.length} relevant chunks from the database.`);
+            // 3. Sub-Millisecond Indexed Vector Search via Partial HNSW
+            const SIMILARITY_THRESHOLD = 0.35;
+            const TOP_K_LIMIT = 5;
+
+            const searchResults = await this.executeIndexedSearch(
+                vectorString,
+                provider.dimensions,
+                SIMILARITY_THRESHOLD,
+                TOP_K_LIMIT,
+                documentIds,
+            );
+
+            this.logger.log(`Retrieved ${searchResults.length} matching candidate chunks.`);
 
             if (searchResults.length === 0) {
-                this.logger.warn('No relevant documents found. Short-circuiting LLM call to save API quota.');
                 return {
                     query: userMessage,
-                    answer: "I do not have enough information in the provided documents to answer this question.",
-                    sourcesUsed: 0
+                    answer: 'I do not have enough information in the selected documents to answer this question.',
+                    sourcesUsed: 0,
+                    citations: [],
                 };
             }
 
-            // Combine the retrieved text chunks into a single block of context
-            const context = searchResults.map(res => res.text).join('\n\n---\n\n');
+            // 4. Verifiable Context Formatting with Document Titles & Chunk Indexes
+            const formattedContext = searchResults
+                .map(
+                    (chunk) =>
+                        `[DOCUMENT: "${chunk.documentTitle}" | Chunk: ${chunk.chunkIndex}]\n${chunk.text}`,
+                )
+                .join('\n\n---\n\n');
 
-            // 3. Orchestrate the System Prompt with retrieved context
-            this.logger.log('Orchestrating system prompt with retrieved context...');
-
+            // 5. Synthesis Prompt Generation
             const prompt = `
-                You are an expert technical assistant. Your job is to answer the user's question using ONLY the provided context. 
-                If the context does not contain the answer, politely state that you do not know based on the provided documents.
-                Do not hallucinate or make up information.
+                You are an expert enterprise technical assistant. Answer the user's question using ONLY the provided context.
+                For every factual statement or data point you mention, cite the exact source document using the format: [Document: "filename.ext", Chunk: X].
+                If multiple documents contain relevant information, synthesize the insights and cite all applicable sources.
+                If the context does not contain enough information to answer accurately, clearly state that you do not know based on the provided documents.
 
                 CONTEXT:
-                ${context}
+                ${formattedContext}
 
                 USER QUESTION:
                 ${userMessage}
-            `;
+                `;
 
-            // 4. Generate the final answer using Gemini 2.5 Flash
-            this.logger.log('Calling Gemini 2.5 Flash for final synthesis...');
             const chatModel = this.ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
             const llmResponse = await chatModel.generateContent(prompt);
             const finalAnswer = llmResponse.response.text();
-
-            this.logger.log('Successfully generated RAG response.');
 
             return {
                 query: userMessage,
                 answer: finalAnswer,
-                sourcesUsed: searchResults.length
+                sourcesUsed: searchResults.length,
+                citations: searchResults.map((r) => ({
+                    documentId: r.documentId,
+                    documentTitle: r.documentTitle,
+                    chunkIndex: r.chunkIndex,
+                    similarity: parseFloat(r.similarity.toFixed(4)),
+                })),
             };
-
         } catch (error) {
-            this.logger.error('Failed to process AI Retrieval layer', error);
+            if (error instanceof NotFoundException || error instanceof BadRequestException) {
+                throw error;
+            }
+            this.logger.error(`Chat retrieval failure: ${(error as Error).message}`, (error as Error).stack);
             throw new InternalServerErrorException('Failed to process AI Retrieval layer.');
         }
+    }
+
+    /**
+     * Executes parameterized SQL utilizing PostgreSQL Partial HNSW Index Partitions.
+     */
+    private async executeIndexedSearch(
+        vectorString: string,
+        dimensions: number,
+        threshold: number,
+        limit: number,
+        documentIds?: string[],
+    ): Promise<RetrievedChunk[]> {
+        const hasDocScope = documentIds && documentIds.length > 0;
+
+        if (dimensions === 768) {
+            return this.prisma.$queryRaw<RetrievedChunk[]>`
+            SELECT 
+            c.id,
+            c."documentId",
+            d.title AS "documentTitle",
+            c."chunkIndex",
+            c.text,
+            (1 - ((c.embedding::vector(768)) <=> ${vectorString}::vector(768)))::float AS similarity
+            FROM "DocumentChunk" c
+            JOIN "Document" d ON c."documentId" = d.id
+            WHERE vector_dims(c.embedding) = 768
+            AND d.status = 'COMPLETED'
+            ${hasDocScope ? Prisma.sql`AND c."documentId" = ANY(${documentIds}::uuid[])` : Prisma.empty}
+            AND (1 - ((c.embedding::vector(768)) <=> ${vectorString}::vector(768))) > ${threshold}
+            ORDER BY (c.embedding::vector(768)) <=> ${vectorString}::vector(768) ASC
+            LIMIT ${limit};
+        `;
+        }
+
+        // Default: 1536 dimension partition (Gemini MRL / OpenAI / OpenRouter)
+        return this.prisma.$queryRaw<RetrievedChunk[]>`
+        SELECT 
+            c.id,
+            c."documentId",
+            d.title AS "documentTitle",
+            c."chunkIndex",
+            c.text,
+            (1 - ((c.embedding::vector(1536)) <=> ${vectorString}::vector(1536)))::float AS similarity
+        FROM "DocumentChunk" c
+        JOIN "Document" d ON c."documentId" = d.id
+        WHERE vector_dims(c.embedding) = 1536
+            AND d.status = 'COMPLETED'
+            ${hasDocScope ? Prisma.sql`AND c."documentId" = ANY(${documentIds}::uuid[])` : Prisma.empty}
+            AND (1 - ((c.embedding::vector(1536)) <=> ${vectorString}::vector(1536))) > ${threshold}
+        ORDER BY (c.embedding::vector(1536)) <=> ${vectorString}::vector(1536) ASC
+        LIMIT ${limit};
+        `;
     }
 }
