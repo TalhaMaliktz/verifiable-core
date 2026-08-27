@@ -6,9 +6,9 @@ import {
     InternalServerErrorException
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmbeddingFactory } from '../embedding/embedding.factory';
+import { ChatFactory } from './chat.factory';
 import { Prisma } from '@prisma/client';
 
 interface RetrievedChunk {
@@ -23,17 +23,13 @@ interface RetrievedChunk {
 @Injectable()
 export class ChatService {
     private readonly logger = new Logger(ChatService.name);
-    private readonly ai: GoogleGenerativeAI;
 
     constructor(
         private readonly configService: ConfigService,
         private readonly prisma: PrismaService,
         private readonly embeddingFactory: EmbeddingFactory,
-    ) {
-        const apiKey = this.configService.get<string>('GEMINI_API_KEY');
-        this.ai = new GoogleGenerativeAI(apiKey || 'dummy-key');
-    }
-
+        private readonly chatFactory: ChatFactory,
+    ) { }
     async processChatRequest(userMessage: string, documentIds?: string[]) {
         this.logger.log(
             `Received query: "${userMessage}" | Scoped Docs: ${documentIds && documentIds.length > 0 ? documentIds.join(', ') : 'Global Knowledge Base'
@@ -127,9 +123,9 @@ export class ChatService {
                 ${userMessage}
                 `;
 
-            const chatModel = this.ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
-            const llmResponse = await chatModel.generateContent(prompt);
-            const finalAnswer = llmResponse.response.text();
+            this.logger.log('Delegating text generation to active chat provider...');
+            const chatProvider = this.chatFactory.getProvider();
+            const finalAnswer = await chatProvider.generateAnswer(prompt);
 
             return {
                 query: userMessage,
