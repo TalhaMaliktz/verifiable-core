@@ -7,10 +7,11 @@ export class ChatController {
     constructor(private readonly chatService: ChatService) { }
 
     @Post()
-    @HttpCode(HttpStatus.OK) // Returns 200 OK instead of the default 201 Created
+    @HttpCode(HttpStatus.OK)
     async askQuestion(@Body() requestDto: ChatRequestDto) {
-        // If the request reaches this line, it means the DTO validation passed.
-        // We pass the clean, validated string to the Service.
-        return this.chatService.processChatRequest(requestDto.message);
+        return this.chatService.processChatRequest(
+            requestDto.message,
+            requestDto.documentIds,
+        );
     }
 }
