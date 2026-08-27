@@ -43,6 +43,7 @@ model Document {
 
 model DocumentChunk {
   id         String                 @id @default(uuid())
+  chunkIndex Int                    @default(0)
   text       String                 @db.Text
   documentId String
   document   Document               @relation(fields: [documentId], references: [id], onDelete: Cascade)
