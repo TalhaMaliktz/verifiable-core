@@ -91,7 +91,7 @@ REDIS_PORT=6379
 # External Model Providers
 GEMINI_API_KEY="your_api_key_here"
 OPENAI_API_KEY="your_api_key_here"
-OPENROUTER_API_KEY"your_api_key_here"
+OPENROUTER_API_KEY="your_api_key_here"
 
 DEFAULT_EMBEDDING_PROVIDER="ollama"
 OLLAMA_BASE_URL="http://localhost:11434/"
