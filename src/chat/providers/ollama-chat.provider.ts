@@ -13,13 +13,16 @@ export class OllamaChatProvider implements IChatProvider {
         this.modelName = this.configService.get<string>('OLLAMA_CHAT_MODEL') || 'qwen2.5:7b';
     }
 
-    async generateAnswer(prompt: string): Promise<string> {
+    async generateAnswer(systemPrompt: string, userPrompt: string): Promise<string> {
         try {
             this.logger.log(`Generating text locally via Ollama model: ${this.modelName}`);
 
             const response = await ollama.chat({
                 model: this.modelName,
-                messages: [{ role: 'user', content: prompt }],
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt },
+                ],
             });
 
             return response.message.content;

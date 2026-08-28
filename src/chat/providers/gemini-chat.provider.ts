@@ -16,11 +16,14 @@ export class GeminiChatProvider implements IChatProvider {
         this.ai = new GoogleGenerativeAI(apiKey || 'dummy-key');
     }
 
-    async generateAnswer(prompt: string): Promise<string> {
+    async generateAnswer(systemPrompt: string, userPrompt: string): Promise<string> {
         try {
             this.logger.log(`Generating text via Gemini cloud model: ${this.modelName}`);
-            const model = this.ai.getGenerativeModel({ model: this.modelName });
-            const result = await model.generateContent(prompt);
+            const model = this.ai.getGenerativeModel({
+                model: this.modelName,
+                systemInstruction: systemPrompt,
+            });
+            const result = await model.generateContent(userPrompt);
             return result.response.text();
         } catch (error) {
             this.logger.error(`Gemini chat generation failed: ${(error as Error).message}`);

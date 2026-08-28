@@ -112,23 +112,17 @@ export class ChatService {
                 )
                 .join('\n\n---\n\n');
 
-            // 5. Synthesis Prompt Generation
-            const prompt = `
-                You are an expert enterprise technical assistant. Answer the user's question using ONLY the provided context.
-                For every factual statement or data point you mention, cite the exact source document using the format: [Document: "filename.ext", Chunk: X].
+            const systemPrompt = `You are an expert enterprise technical assistant.
+                Answer the user's question using ONLY the provided context.
+                For every factual statement, cite the exact source document using the format: [Document: "filename.ext", Chunk: X].
                 If multiple documents contain relevant information, synthesize the insights and cite all applicable sources.
-                If the context does not contain enough information to answer accurately, clearly state that you do not know based on the provided documents.
+                If the context does not contain enough information, clearly state that you do not know.`;
 
-                CONTEXT:
-                ${formattedContext}
-
-                USER QUESTION:
-                ${userMessage}
-                `;
+            const userPrompt = `CONTEXT:\n${formattedContext}\n\nUSER QUESTION:\n${userMessage}`;
 
             this.logger.log('Delegating text generation to active chat provider...');
             const chatProvider = this.chatFactory.getProvider();
-            const finalAnswer = await chatProvider.generateAnswer(prompt);
+            const finalAnswer = await chatProvider.generateAnswer(systemPrompt, userPrompt);
 
             return {
                 query: userMessage,
