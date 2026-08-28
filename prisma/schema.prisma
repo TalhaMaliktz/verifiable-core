@@ -32,7 +32,7 @@ model Document {
   fileSize       Int
   status         String          @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED
   errorMessage   String?         @db.Text
-  embeddingModel String          @default("gemini-embedding-001")
+  embeddingModel String
   dimensions     Int             @default(3072)
   userId         String?
   user           User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
