@@ -172,7 +172,7 @@ export class ChatService {
             JOIN "Document" d ON c."documentId" = d.id
             WHERE vector_dims(c.embedding) = 768
                 AND d.status = 'COMPLETED'
-                ${hasDocScope ? Prisma.sql`AND c."documentId" = ANY(${documentIds}::uuid[])` : Prisma.empty}
+                ${hasDocScope ? Prisma.sql`AND c."documentId" = ANY(${documentIds}::text[])` : Prisma.empty}
                 AND (1 - ((c.embedding::vector(768)) <=> ${vectorString}::vector(768))) > ${threshold}
             ORDER BY (c.embedding::vector(768)) <=> ${vectorString}::vector(768) ASC
             LIMIT ${limit};
@@ -191,7 +191,7 @@ export class ChatService {
         JOIN "Document" d ON c."documentId" = d.id
         WHERE vector_dims(c.embedding) = 1536
             AND d.status = 'COMPLETED'
-            ${hasDocScope ? Prisma.sql`AND c."documentId" = ANY(${documentIds}::uuid[])` : Prisma.empty}
+            ${hasDocScope ? Prisma.sql`AND c."documentId" = ANY(${documentIds}::text[])` : Prisma.empty}
             AND (1 - ((c.embedding::vector(1536)) <=> ${vectorString}::vector(1536))) > ${threshold}
         ORDER BY (c.embedding::vector(1536)) <=> ${vectorString}::vector(1536) ASC
         LIMIT ${limit};
