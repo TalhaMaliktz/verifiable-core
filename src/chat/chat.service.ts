@@ -31,8 +31,11 @@ export class ChatService {
         private readonly chatFactory: ChatFactory,
     ) { }
     async processChatRequest(userMessage: string, documentIds?: string[]) {
+        const targetDocIds = documentIds && documentIds.length > 0
+            ? Array.from(new Set(documentIds))
+            : undefined;
         this.logger.log(
-            `Received query: "${userMessage}" | Scoped Docs: ${documentIds && documentIds.length > 0 ? documentIds.join(', ') : 'Global Knowledge Base'
+            `Received query: "${userMessage}" | Scoped Docs: ${targetDocIds && targetDocIds.length > 0 ? targetDocIds.join(', ') : 'Global Knowledge Base'
             }`,
         );
 
@@ -40,9 +43,9 @@ export class ChatService {
             // 1. Model Resolution & Dimension Uniformity Verification
             let targetModel: string | undefined;
 
-            if (documentIds && documentIds.length > 0) {
+            if (targetDocIds && targetDocIds.length > 0) {
                 const documents = await this.prisma.document.findMany({
-                    where: { id: { in: documentIds } },
+                    where: { id: { in: targetDocIds } },
                     select: { id: true, title: true, embeddingModel: true, dimensions: true, status: true },
                 });
 
@@ -50,9 +53,9 @@ export class ChatService {
                     throw new NotFoundException('None of the specified document IDs were found.');
                 }
 
-                if (documents.length !== documentIds.length) {
+                if (documents.length !== targetDocIds.length) {
                     const foundIds = new Set(documents.map((d) => d.id));
-                    const missingIds = documentIds.filter((id) => !foundIds.has(id));
+                    const missingIds = targetDocIds.filter((id) => !foundIds.has(id));
                     throw new NotFoundException(`Documents not found for IDs: ${missingIds.join(', ')}`);
                 }
 
@@ -87,7 +90,7 @@ export class ChatService {
                 provider.dimensions,
                 SIMILARITY_THRESHOLD,
                 TOP_K_LIMIT,
-                documentIds,
+                targetDocIds,
             );
 
             this.logger.log(`Retrieved ${searchResults.length} matching candidate chunks.`);
