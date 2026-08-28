@@ -156,28 +156,30 @@ export class ChatService {
     ): Promise<RetrievedChunk[]> {
         const hasDocScope = documentIds && documentIds.length > 0;
 
-        if (dimensions === 768) {
-            return this.prisma.$queryRaw<RetrievedChunk[]>`
+        return this.prisma.$transaction(async (tx) => {
+            await tx.$executeRawUnsafe('SET LOCAL hnsw.ef_search = 100;');
+
+            if (dimensions === 768) {
+                return tx.$queryRaw<RetrievedChunk[]>`
             SELECT 
-            c.id,
-            c."documentId",
-            d.title AS "documentTitle",
-            c."chunkIndex",
-            c.text,
-            (1 - ((c.embedding::vector(768)) <=> ${vectorString}::vector(768)))::float AS similarity
+                c.id,
+                c."documentId",
+                d.title AS "documentTitle",
+                c."chunkIndex",
+                c.text,
+                (1 - ((c.embedding::vector(768)) <=> ${vectorString}::vector(768)))::float AS similarity
             FROM "DocumentChunk" c
             JOIN "Document" d ON c."documentId" = d.id
             WHERE vector_dims(c.embedding) = 768
-            AND d.status = 'COMPLETED'
-            ${hasDocScope ? Prisma.sql`AND c."documentId" = ANY(${documentIds}::uuid[])` : Prisma.empty}
-            AND (1 - ((c.embedding::vector(768)) <=> ${vectorString}::vector(768))) > ${threshold}
+                AND d.status = 'COMPLETED'
+                ${hasDocScope ? Prisma.sql`AND c."documentId" = ANY(${documentIds}::uuid[])` : Prisma.empty}
+                AND (1 - ((c.embedding::vector(768)) <=> ${vectorString}::vector(768))) > ${threshold}
             ORDER BY (c.embedding::vector(768)) <=> ${vectorString}::vector(768) ASC
             LIMIT ${limit};
-        `;
-        }
+            `;
+            }
 
-        // Default: 1536 dimension partition (Gemini MRL / OpenAI / OpenRouter)
-        return this.prisma.$queryRaw<RetrievedChunk[]>`
+            return tx.$queryRaw<RetrievedChunk[]>`
         SELECT 
             c.id,
             c."documentId",
@@ -193,6 +195,7 @@ export class ChatService {
             AND (1 - ((c.embedding::vector(1536)) <=> ${vectorString}::vector(1536))) > ${threshold}
         ORDER BY (c.embedding::vector(1536)) <=> ${vectorString}::vector(1536) ASC
         LIMIT ${limit};
-        `;
+      `;
+        });
     }
 }
