@@ -67,11 +67,12 @@ export class IngestionProcessor extends WorkerHost {
 
                     if (result.embedding && result.embedding.length > 0) {
                         await this.prisma.$executeRaw`
-                        INSERT INTO "DocumentChunk" (id, text, "documentId", embedding)
+                        INSERT INTO "DocumentChunk" (id, text, "documentId", "chunkIndex", embedding)
                         VALUES (
                             gen_random_uuid(), 
                             ${docs[i].pageContent}, 
                             ${documentId}, 
+                            ${i}, 
                             ${JSON.stringify(result.embedding)}::vector
                         )
                         `;
