@@ -8,23 +8,26 @@ This repository provides the hardened backend infrastructure (event-driven inges
 
 ## 🗺️ The Living Manifesto (Roadmap)
 
-We are building this engine in distinct phases to simulate a rigorous enterprise software lifecycle, prioritizing determinism, memory isolation, and infrastructure security over prototype speed.
+We build this engine in phases to prove enterprise software reliability. We prioritize determinism, memory safety, and infrastructure security over prototype speed.
 
 ### Currently Shipped (Production-Ready)
 
 - [x] **Phase 1: The Foundation** (NestJS API Gateway, Strict DTO Validation, CORS).
 - [x] **Phase 2: The Data Layer** (Dockerized Postgres, Prisma v7 Connection Pooling).
 - [x] **Phase 3: Asynchronous Ingestion** (Redis + BullMQ, Decoupled File Processing).
-- [x] **Phase 4: Vectorization Pipeline** (Native SDK Integration, pgvector 3072-dims, Defensive Parsing).
-- [x] **Phase 5: Retrieval Engine** (Raw SQL Cosine Similarity, Quota Short-Circuit, LLM Synthesis).
-- [x] **Phase 6: Multi-Format Ingestion & Memory Hardening** ($O(1)$ Disk Streaming Claim-Check, PDF/MD/TXT/DOCX extraction, UTF-8 Null-Byte sanitization, Worker Singleton lifecycle).
+- [x] **Phase 4: Vectorization Pipeline** (Native SDK Integration, Dynamic Dimensions, Defensive Parsing).
+- [x] **Phase 5: Dynamic Retrieval Engine** (Model-matched search, Cosine Similarity, Quota Short-Circuit).
+- [x] **Phase 6: Multi-Format Ingestion & Memory Hardening** ($O(1)$ Disk Streaming, PDF/MD/TXT/DOCX extraction, Null-Byte sanitization, Worker Singleton lifecycle).
+- [x] **Phase 7: Vector Algorithmic Optimization** (Dual partial HNSW indexes for 768 and 1536 dims, `SET LOCAL hnsw.ef_search = 100`, `::text[]` array casting).
+- [x] **Phase 8: Security & Fallback Orchestration** (Helmet, NestJS Throttler, strict prompt role separation, Ollama/Gemini fallback with 60-second abort timeouts).
 
-### The Horizon (Active R&D)
+### The Horizon (Active Open-Core R&D)
 
-- [ ] **Phase 7: Vector Algorithmic Optimization** (HNSW indexing via `vector_cosine_ops` with sub-millisecond retrieval bounds).
-- [ ] **Phase 8: Stateful Graph Orchestration** (LangGraph `PostgresSaver` integration for persistent agent memory).
-- [ ] **Phase 9: Perimeter Security** (Standard stateless JWT authentication boundaries and tenant isolation).
-- [ ] **Phase 10: Sovereign Infrastructure** (Local SGLang inference and bare-metal orchestration specs).
+- [ ] **Phase 9: Ingestion Integrity & Hybrid Search** (SHA-256 byte stream hashing, BM25 full-text search, Reciprocal Rank Fusion).
+- [ ] **Phase 10: Perimeter Auth & Boundary Defense** (Stateless JWT token validation, loopback inference binding).
+- [ ] **Phase 11: Sovereign Bare-Metal Serving** (Hetzner GPU setup, SGLang Docker serving with RadixAttention prefix caching).
+- [ ] **Phase 12: Structure-Aware Chunking & LLM Factories** (Tree-sitter AST parsing, atomic table retention, dynamic NestJS factory providers).
+- [ ] **Phase 13: Batch CLI & Scale Latency Benchmarks** (Python folder ingestion CLI, 600 financial reports testbed, empirical HNSW vs scan benchmarks, technical case study).
 
 ---
 
@@ -57,6 +60,13 @@ To handle the rigorous demands of enterprise data sovereignty, high-volume inges
 - **High-Fidelity Embedding:** Configures `pgvector` to accept high-dimension vectors (`vector(3072)`) natively.
 - **Dockerized Persistence:** Uses the `ankane/pgvector` image for local, data-sovereign vector storage instead of third-party managed vector cloud services.
 - **Sovereign State Machine:** Manages the entire document lifecycle (`PENDING` -> `PROCESSING` -> `COMPLETED` / `FAILED`) within a local Postgres database to guarantee data privacy, auditable failure logs, and job recovery.
+- **Partial HNSW Vector Indexes:** Deployed two separate HNSW indexes (`m=16`, `ef_construction=64`) filtered by `vector_dims(embedding)`. This isolates 768-dimension local embeddings from 1536-dimension cloud embeddings in the same table.
+- **Transaction-Scoped Search Depth:** Every vector query runs inside a database transaction with `SET LOCAL hnsw.ef_search = 100`. This prevents dropped chunks during filtered document searches.
+- **Dynamic Model-Matched Retrieval:** The `ChatService` inspects the target document before vectorizing user queries. It matches the query embedding model to the document embedding model automatically.
+- **Strict Prompt Role Separation:** Chat prompts split system instructions from user inputs across local and cloud providers. This blocks prompt injection attacks from malicious document text.
+- **Provider Fallback & Timeout Guards:** Local Ollama generation runs with a 60-second `Promise.race` timeout guard. The system falls back cleanly to Gemini when configured in environment variables.
+- **PostgreSQL Type-Safe Scoping:** Raw SQL search queries cast input document IDs to `::text[]`. This prevents type mismatch crashes against Prisma text columns.
+- **Input UUID Deduplication:** Scoped document queries deduplicate input arrays before querying Prisma. This prevents false 404 errors on repeated document IDs.
 
 ---
 
@@ -80,21 +90,29 @@ npm install
 Create a `.env` file in the root directory:
 
 ```env
-# Database
+# Application Port
 PORT=3000
+
+# Database Persistence
 DATABASE_URL="postgresql://postgres:password@localhost:5432/verifiable_core?schema=public"
 
-# Redis
+# Redis Queue
 REDIS_HOST="localhost"
 REDIS_PORT=6379
 
-# External Model Providers
-GEMINI_API_KEY="your_api_key_here"
-OPENAI_API_KEY="your_api_key_here"
-OPENROUTER_API_KEY="your_api_key_here"
-
+# Active Provider Routing
 DEFAULT_EMBEDDING_PROVIDER="ollama"
-OLLAMA_BASE_URL="http://localhost:11434/"
+DEFAULT_CHAT_PROVIDER="ollama"
+
+# Local Inference Config
+OLLAMA_BASE_URL="http://localhost:11434"
+OLLAMA_CHAT_MODEL="qwen2.5:7b"
+
+# Cloud Model Keys & Names
+GEMINI_API_KEY="your_gemini_api_key_here"
+CHAT_MODEL="gemini-2.5-flash"
+OPENAI_API_KEY="your_openai_api_key_here"
+OPENROUTER_API_KEY="your_openrouter_api_key_here"
 ```
 
 ### 4. Infrastructure & Database
@@ -116,7 +134,9 @@ npm run start:dev
 
 ## 🧪 Verification
 
-To verify the **API <-> Database** connection is working, run this cURL command:
+### 1. Verify API and Database Connection
+
+Run this cURL command to create a test user:
 
 ```bash
 curl -X POST http://localhost:3000/users \
@@ -124,15 +144,28 @@ curl -X POST http://localhost:3000/users \
    -d '{"email": "engineer@verifiable.local", "name": "System Reviewer"}'
 ```
 
-To verify the **Event-Driven Ingestion Pipeline** (Upload -> Postgres PENDING -> Redis Worker -> Postgres COMPLETED + Vectorized), upload a PDF:
+### 2. Verify File Ingestion Pipeline
+
+#### A. Default Ingestion (Local Ollama)
+
+Upload a file to trigger disk streaming and background vector jobs:
+
+```bash
+curl -X POST http://localhost:3000/ingestion/upload \
+  -F "file=@./path/to/your/test.pdf"
+```
+
+#### B. Ingestion with Custom Model Override
+
+Specify a model provider (`gemini`, `openai`, `ollama`, or `openrouter`) in the multipart body:
 
 ```bash
 curl -X POST http://localhost:3000/ingestion/upload \
   -F "file=@./path/to/your/test.pdf" \
-  -H "Content-Type: multipart/form-data"
+  -F "model=gemini"
 ```
 
-**Expected Output (Instant API Response):**
+**Expected Instant API Response:**
 
 ```json
 {
@@ -143,31 +176,116 @@ curl -X POST http://localhost:3000/ingestion/upload \
 }
 ```
 
-**Worker Logs (Background Processing):**
+**Expected Worker Terminal Logs:**
 
 ```bash
 [Nest] LOG [IngestionProcessor] --- [WORKER START] Job 1 (Attempt 1) ---
-[Nest] LOG [IngestionService] Routing extraction for file: ephemeral-uploads/uuid.md (extension: .md)
-[Nest] LOG [IngestionService] Successfully read plaintext/markdown. Extracted 5519 characters.
+[Nest] LOG [IngestionProcessor] Active Embedding Provider: nomic-embed-text (768 dims)
+[Nest] LOG [IngestionService] Routing extraction for file: ephemeral-uploads/uuid.pdf (extension: .pdf)
+[Nest] LOG [IngestionService] Successfully read PDF text via magic-byte validator. Extracted 5519 characters.
 [Nest] LOG [IngestionProcessor] Split document into 10 valid chunks.
-[Nest] LOG [IngestionProcessor] Throttling requests to Gemini (1 chunk every 4.2 seconds)...
-[Nest] LOG [IngestionProcessor] [1/10] Successfully saved 3072-dim vector.
+[Nest] LOG [IngestionProcessor] [1/10] Persisted 768-dim vector.
 ...
-[Nest] LOG [IngestionProcessor] Ephemeral file unlinked: ephemeral-uploads/uuid.md
+[Nest] LOG [IngestionProcessor] Ephemeral file unlinked: ephemeral-uploads/uuid.pdf
 [Nest] LOG [IngestionProcessor] --- [WORKER COMPLETED] Document safely stored! ---
 ```
 
-**Verify Persistence & Vectorization:**
-Run Prisma Studio to view the securely stored document, its `COMPLETED` status, and the generated embeddings:
+### 3. Verify Database Persistence
+
+Open Prisma Studio to inspect stored records, vector chunk indexes, and document statuses:
 
 ```bash
 npx prisma studio
 ```
 
-To verify the **RAG Read Path** (Vector Search + Hallucination-Free Synthesis), run this query:
+### 4. Verify the Dynamic RAG Engine
+
+#### A. Global Knowledge Base Search
+
+Queries all completed documents across the database:
 
 ```bash
 curl -X POST http://localhost:3000/chat \
-   -H "Content-Type: application/json" \
-   -d '{"message": "What is this document about?"}'
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What are the main technical points in these documents?"
+  }'
+```
+
+**Expected Response (with verified chunk citations):**
+
+```json
+{
+  "query": "What are the main technical points in these documents?",
+  "answer": "The main technical points include:\n\n1. Document Ingestion and Parsing Validation [Document: \"test-docs.docx\", Chunk: 0]...\n2. Verification and Reliability Strategies [Document: \"test-txt.txt\", Chunk: 1]...",
+  "sourcesUsed": 5,
+  "citations": [
+    {
+      "documentId": "f5c913c4-facd-4cb4-86eb-e2a990befff1",
+      "documentTitle": "test-docs.docx",
+      "chunkIndex": 0,
+      "similarity": 0.5584
+    },
+    {
+      "documentId": "714873d2-0229-4f9d-ba50-a0b34518fd6d",
+      "documentTitle": "test-txt.txt",
+      "chunkIndex": 1,
+      "similarity": 0.5525
+    }
+  ]
+}
+```
+
+#### B. Scoped Document Search
+
+Restricts semantic retrieval to specific document IDs:
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What does this file discuss?",
+    "documentIds": ["YOUR_DOCUMENT_UUID"]
+  }'
+```
+
+#### C. Duplicate ID Deduplication Test
+
+Sends repeated document UUIDs to prove deduplication safety:
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What does this file discuss?",
+    "documentIds": [
+      "YOUR_DOCUMENT_UUID",
+      "YOUR_DOCUMENT_UUID"
+    ]
+  }'
+```
+
+#### D. Input Validation Check
+
+Sends an invalid UUID identifier to verify DTO error handling:
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Tell me about this document.",
+    "documentIds": ["00000000-0000-0000-0000-000000000000"]
+  }'
+```
+
+**Expected Response (HTTP 400 Bad Request):**
+
+```json
+{
+  "message": [
+    "Every element in documentIds must be a valid UUIDv4 identifier."
+  ],
+  "error": "Bad Request",
+  "statusCode": 400
+}
 ```
