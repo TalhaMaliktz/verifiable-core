@@ -28,12 +28,13 @@ model User {
 model Document {
   id             String          @id @default(uuid())
   title          String
+  fileHash        String          @unique
   content        String?         @db.Text
   fileSize       Int
   status         String          @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED
   errorMessage   String?         @db.Text
   embeddingModel String
-  dimensions     Int             @default(3072)
+  dimensions     Int
   userId         String?
   user           User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt      DateTime        @default(now())
