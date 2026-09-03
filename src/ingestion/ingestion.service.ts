@@ -1,9 +1,17 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+    Injectable,
+    Logger,
+    NotFoundException,
+    BadRequestException,
+    ConflictException,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from 'src/prisma/prisma.service';
-import * as fs from 'fs/promises';
-import { extname } from 'path';
+import * as fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { extname } from 'node:path';
 import * as mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
 
@@ -21,27 +29,82 @@ export class IngestionService {
         private readonly prisma: PrismaService,
     ) { }
 
+    private async computeFileHash(filePath: string): Promise<string> {
+        return new Promise((resolve, reject) => {
+            const hasher = createHash('sha256');
+
+            const stream = createReadStream(filePath);
+
+            stream.on('data', (chunk: Buffer) => {
+                hasher.update(chunk);
+            });
+
+            stream.on('end', () => {
+                resolve(hasher.digest('hex'));
+            });
+
+            stream.on('error', (error) => {
+                reject(error);
+            });
+        });
+    }
+
     async queueDocumentIngestion(file: Express.Multer.File, preferredModel?: string) {
-        const document = await this.prisma.document.create({
-            data: {
-                title: file.originalname,
-                fileSize: file.size,
-            },
+        let fileHash: string;
+        try {
+            fileHash = await this.computeFileHash(file.path);
+        } catch (error) {
+            await fs.unlink(file.path).catch(() => null);
+            this.logger.error(`Hashing failed for ephemeral file: ${file.path}`, error);
+            throw new BadRequestException('Failed to process file stream for verification.');
+        }
+
+        const existingDocument = await this.prisma.document.findUnique({
+            where: { fileHash },
         });
 
-        const job = await this.ingestionQueue.add('process-document', {
-            storagePath: file.path,
-            documentId: document.id,
-            originalName: file.originalname,
-            preferredModel: preferredModel,
-        });
+        if (existingDocument) {
+            await fs.unlink(file.path).catch(() => null);
 
-        return {
-            status: 'queued',
-            jobId: job.id,
-            documentId: document.id,
-            message: 'File streamed to disk and job queued for processing.',
-        };
+            throw new ConflictException(
+                `Duplicate file detected. This document matches existing document ID: ${existingDocument.id}`,
+            );
+        }
+
+        try {
+            const document = await this.prisma.document.create({
+                data: {
+                    title: file.originalname,
+                    fileSize: file.size,
+                    fileHash: fileHash,
+                },
+            });
+
+            const job = await this.ingestionQueue.add('process-document', {
+                storagePath: file.path,
+                documentId: document.id,
+                originalName: file.originalname,
+                preferredModel: preferredModel,
+            });
+
+            return {
+                status: 'queued',
+                jobId: job.id,
+                documentId: document.id,
+                fileHash: fileHash,
+                message: 'File streamed to disk, verified, and job queued for processing.',
+            };
+        } catch (error: any) {
+            await fs.unlink(file.path).catch(() => null);
+
+            if (error?.code === 'P2002') {
+                throw new ConflictException(
+                    'Concurrent upload conflict: identical document was just registered by another request.',
+                );
+            }
+
+            throw error;
+        }
     }
 
     async getJobStatus(jobId: string) {
