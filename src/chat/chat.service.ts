@@ -69,7 +69,7 @@ export class ChatService {
                     );
                 }
 
-                targetModel = documents[0].embeddingModel;
+                targetModel = documents[0].embeddingModel ?? undefined;
             }
 
             // 2. Vectorize user question using the resolved provider
