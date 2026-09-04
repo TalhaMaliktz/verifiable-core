@@ -20,10 +20,10 @@ We build this engine in phases to prove enterprise software reliability. We prio
 - [x] **Phase 6: Multi-Format Ingestion & Memory Hardening** ($O(1)$ Disk Streaming, PDF/MD/TXT/DOCX extraction, Null-Byte sanitization, Worker Singleton lifecycle).
 - [x] **Phase 7: Vector Algorithmic Optimization** (Dual partial HNSW indexes for 768 and 1536 dims, `SET LOCAL hnsw.ef_search = 100`, `::text[]` array casting).
 - [x] **Phase 8: Security & Fallback Orchestration** (Helmet, NestJS Throttler, strict prompt role separation, Ollama/Gemini fallback with 60-second abort timeouts).
+- [x] **Phase 9: Ingestion Integrity & Hybrid Search** (SHA-256 byte stream hashing, PostgreSQL GIN full-text search, Scatter-Gather parallel retrieval, in-memory Reciprocal Rank Fusion with $k=60$).
 
 ### The Horizon (Active Open-Core R&D)
 
-- [ ] **Phase 9: Ingestion Integrity & Hybrid Search** (SHA-256 byte stream hashing, BM25 full-text search, Reciprocal Rank Fusion).
 - [ ] **Phase 10: Perimeter Auth & Boundary Defense** (Stateless JWT token validation, loopback inference binding).
 - [ ] **Phase 11: Sovereign Bare-Metal Serving** (Hetzner GPU setup, SGLang Docker serving with RadixAttention prefix caching).
 - [ ] **Phase 12: Structure-Aware Chunking & LLM Factories** (Tree-sitter AST parsing, atomic table retention, dynamic NestJS factory providers).
@@ -67,6 +67,12 @@ To handle the rigorous demands of enterprise data sovereignty, high-volume inges
 - **Provider Fallback & Timeout Guards:** Local Ollama generation runs with a 60-second `Promise.race` timeout guard. The system falls back cleanly to Gemini when configured in environment variables.
 - **PostgreSQL Type-Safe Scoping:** Raw SQL search queries cast input document IDs to `::text[]`. This prevents type mismatch crashes against Prisma text columns.
 - **Input UUID Deduplication:** Scoped document queries deduplicate input arrays before querying Prisma. This prevents false 404 errors on repeated document IDs.
+- **Byte-Level Streaming Fingerprints:** Uploaded files stream through a cryptographic transform stream on the fly to compute SHA-256 hashes with flat $O(1)$ memory, preventing heap buffer exhaustion during duplicate checks.
+- **Database-Enforced Invariants:** A PostgreSQL unique B-Tree index on `Document.fileHash` acts as the single source of truth, neutralizing concurrent upload race conditions directly at the storage engine layer.
+- **Fail-Fast Disk Cleanup:** When duplicate file uploads trigger an HTTP 409 Conflict at the API gateway boundary, the ephemeral file is unlinked immediately via `fs.unlink()` to prevent storage leaks, since rejected jobs bypass the BullMQ worker lifecycle.
+- **Expression-Based GIN Inverted Indexing:** Deployed a PostgreSQL Generalized Inverted Index on `to_tsvector('english', text)` to enable sub-millisecond keyword lookups, language-aware stemming, and stop-word filtering.
+- **Scatter-Gather Parallel Retrieval:** The retrieval layer broadcasts queries to both the dense HNSW vector index and the sparse GIN full-text index concurrently over the PostgreSQL connection pool using `Promise.all`, reducing retrieval latency to the slowest query.
+- **In-Memory Reciprocal Rank Fusion (RRF):** Replaced arbitrary score arithmetic with position-based rank fusion ($k=60$) using an in-memory TypeScript `Map`, combining disparate retrieval scales while avoiding database-level joins and window functions.
 
 ---
 
@@ -287,5 +293,109 @@ curl -X POST http://localhost:3000/chat \
   ],
   "error": "Bad Request",
   "statusCode": 400
+}
+```
+
+### 5. Verify Ingestion Deduplication (SHA-256 Collision Rejection)
+
+Attempting to upload an identical file returns an immediate HTTP 409 Conflict without triggering background processing:
+
+```bash
+curl -X POST http://localhost:3000/ingestion/upload \
+  -F "file=@./test-assets/test-txt.txt"
+```
+
+**Expected Response (HTTP 409 Conflict):**
+
+```json
+{
+  "message": "Duplicate file detected. This document matches existing document ID: df8c0f8c-b96d-4657-80a5-87549c8041b9",
+  "error": "Conflict",
+  "statusCode": 409
+}
+```
+
+### 6. Verify Hybrid Retrieval & Reciprocal Rank Fusion (RRF)
+
+#### A. Exact Keyword Retrieval (Lexical Dominance via GIN)
+
+Queries for exact function names, acronyms, or error codes trigger dual-channel matches, producing higher RRF scores ($0.030+$):
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "getInfo"
+  }'
+```
+
+**Expected Response (Dual-Channel Boost)**
+
+```json
+{
+  "query": "getInfo",
+  "answer": "The `getInfo` function in the `pdf-parse` library is used to extract metadata...",
+  "sourcesUsed": 5,
+  "citations": [
+    {
+      "documentId": "5bd8b863-a47e-4793-9b95-f4f36eb9dd2d",
+      "documentTitle": "pdf-parse - npm.pdf",
+      "chunkIndex": 4,
+      "rrfScore": 0.032522
+    }
+  ]
+}
+```
+
+#### B. Conceptual Retrieval (Semantic Dominance via HNSW)
+
+Queries phrased with abstract synonyms retrieve conceptually related chunks even when exact keywords are missing from the source text:
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How do security leaders buy software?"
+  }'
+```
+
+**Expected Response (Single-Channel Vector Match)**
+
+```json
+{
+  "query": "How do security leaders buy software?",
+  "answer": "Security leaders, particularly CISOs and security-minded engineering leads, tend to prioritize self-hostability...",
+  "sourcesUsed": 5,
+  "citations": [
+    {
+      "documentId": "df8c0f8c-b96d-4657-80a5-87549c8041b9",
+      "documentTitle": "test-txt.txt",
+      "chunkIndex": 1,
+      "rrfScore": 0.016393
+    }
+  ]
+}
+```
+
+#### C. Multi-Tenant Document Boundary Isolation
+
+Queries restricted to specific document IDs strictly isolate retrieval scope, refusing to hallucinate or return matching chunks from unselected documents
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How do security leaders buy software?",
+    "documentIds": ["5bd8b863-a47e-4793-9b95-f4f36eb9dd2d"]
+  }'
+```
+
+**Expected Response (Single-Channel Vector Match)**
+
+```json
+{
+  "query": "How do security leaders buy software?",
+  "answer": "The provided context does not contain any information about how security leaders buy software. Therefore, I do not know based on the given information.",
+  "sourcesUsed": 5
 }
 ```
