@@ -20,7 +20,7 @@ We build this engine in phases to prove enterprise software reliability. We prio
 - [x] **Phase 6: Multi-Format Ingestion & Memory Hardening** ($O(1)$ Disk Streaming, PDF/MD/TXT/DOCX extraction, Null-Byte sanitization, Worker Singleton lifecycle).
 - [x] **Phase 7: Vector Algorithmic Optimization** (Dual partial HNSW indexes for 768 and 1536 dims, `SET LOCAL hnsw.ef_search = 100`, `::text[]` array casting).
 - [x] **Phase 8: Security & Fallback Orchestration** (Helmet, NestJS Throttler, strict prompt role separation, Ollama/Gemini fallback with 60-second abort timeouts).
-- [x] **Phase 9: Ingestion Integrity & Hybrid Search** (SHA-256 byte stream hashing, PostgreSQL GIN full-text search, Scatter-Gather parallel retrieval, in-memory Reciprocal Rank Fusion with $k=60$).
+- [x] **Phase 9: Ingestion Integrity & Hybrid Search** (SHA-256 byte stream hashing, PostgreSQL GIN full-text search, Scatter-Gather parallel retrieval, in-memory Reciprocal Rank Fusion with $k=60$) — [guide](docs/guides/hybrid-search-retrieval.md).
 
 ### The Horizon (Active Open-Core R&D)
 
@@ -28,6 +28,16 @@ We build this engine in phases to prove enterprise software reliability. We prio
 - [ ] **Phase 11: Sovereign Bare-Metal Serving** (Hetzner GPU setup, SGLang Docker serving with RadixAttention prefix caching).
 - [ ] **Phase 12: Structure-Aware Chunking & LLM Factories** (Tree-sitter AST parsing, atomic table retention, dynamic NestJS factory providers).
 - [ ] **Phase 13: Batch CLI & Scale Latency Benchmarks** (Python folder ingestion CLI, 600 financial reports testbed, empirical HNSW vs scan benchmarks, technical case study).
+
+---
+
+## 📖 Deep Dives
+
+Step-by-step implementation guides for individual features. Each one covers the problem, the architecture, the trade-offs, and the code, so a feature can be understood and rebuilt without reading the whole source tree.
+
+| Guide                                                                            | What it covers                                                                                                                                                                                          | Stack                                     |
+| :------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :---------------------------------------- |
+| [Hybrid Search & Reciprocal Rank Fusion](docs/guides/hybrid-search-retrieval.md) | Add a PostgreSQL full-text (sparse) leg beside the dense pgvector leg, run both in parallel, and fuse the two ranked lists by **rank, not score** to cancel out the cosine-vs-`ts_rank` scale mismatch. | PostgreSQL, pgvector, GIN, Prisma, NestJS |
 
 ---
 
@@ -399,3 +409,5 @@ curl -X POST http://localhost:3000/chat \
   "sourcesUsed": 5
 }
 ```
+
+> For the full implementation walkthrough (index DDL, query code, RRF function, and the trade-offs), see the [Hybrid Search guide](docs/guides/hybrid-search-retrieval.md).
