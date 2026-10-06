@@ -60,3 +60,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Ignore local test documents
 *.pdf
 test-assets/
+
+# Python ETL
+etl/.venv/
+etl/__pycache__/
+etl/output/
+*.pyc
